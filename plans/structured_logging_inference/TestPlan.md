@@ -6,18 +6,21 @@ status: In Review
 author: AI Core Platform
 components:
 - AI Core Platform
+- llm-d
 - Model and Agent Observability
-additional_docs:
-- https://redhat.atlassian.net/browse/RHAIRFE-2776
-last_updated: '2026-08-17'
-version: 1.0.0
+additional_docs: []
+last_updated: '2026-11-03'
+version: 1.2.0
 reviewers: []
 ---
-# Structured Logging for Inference Components Test Plan
-**AI Core Platform / Model and Agent Observability – Structured JSON Logging
-and Log Collection Pipeline**
+# Inference Request Log Collection Test Plan
+
+**AI Core Platform / Model and Agent Observability** – **request-path log collection**
 
 **Strategy**: [RHAISTRAT-2413](https://redhat.atlassian.net/browse/RHAISTRAT-2413)
+
+> Based on the Jira description revised 2026-08-26, not the 2026-08-17 strategy attachment.
+> The original plan and 51 cases covered an earlier, broader structured-logging strategy.
 
 ---
 
@@ -25,97 +28,63 @@ and Log Collection Pipeline**
 
 ### 1.1 Purpose
 
-This test plan validates the structured JSON logging capability for
-RHOAI inference components (vLLM, llm-d EPP, MaaS, KServe controllers)
-as defined in RHAISTRAT-2413. The strategy standardizes log emission on
-the OTel Logs Data Model with `trace_id`/`span_id` correlation, extends
-the odh-observability module to collect inference logs and route them to
-Loki, and enables operators to query logs by service name, trace ID, pod
-name, severity, and time range through the OpenShift Console.
+Validate that `odh-observability` collects native stdout/stderr logs produced while vLLM,
+llm-d EPP, and MaaS process active inference requests in targeted namespaces, and forwards
+those entries to an admin-installed Loki backend. Validate dependency reporting, disabled
+collection, tenant isolation, and exclusion of controller reconciliation logs.
 
-Testing covers the full lifecycle: structured log emission from each
-inference component, collection pipeline creation and dependency
-management by the odh-observability controller, log delivery to Loki,
-multi-tenant log isolation, log-to-trace correlation with Tempo, and
-opt-in privacy-sensitive content logging. The strategy affects five teams
-and requires sprint-zero evaluation of the collection pipeline approach
-(OTel-based vs CLO-based) before controller work begins.
+Log formatting, runtime instrumentation, and non-request lifecycle or administrative logs
+are **not** deliverables. The collection path (existing OTel pipeline or conditional CLO)
+and Monitoring CR schema require implementation design before path-specific tests can run.
 
 ### 1.2 Scope
 
 #### In Scope (AI Core Platform / Observability Responsibilities)
 
-- Structured JSON log emission from vLLM, llm-d EPP, MaaS, and KServe
-  controllers conforming to the OTel Logs Data Model
-- Log entries with `timestamp`, `severity`, `body`, and resource
-  attributes (`service.name`, `k8s.pod.name`, `k8s.namespace.name`)
-- `trace_id` and `span_id` inclusion when W3C traceparent context is
-  available
-- vLLM queue lifecycle logging (enqueue, dequeue, timeout/discard with
-  reason and engine identity)
-- llm-d EPP routing decision logs (engine selected, selection reason,
-  queue depth, KV-cache utilization)
-- MaaS routing rejection logs and tenant/token logs with GenAI semantic
-  convention fields
-- KServe controller lifecycle logs (reconciliation events, status
-  transitions, error conditions)
-- GenAI semantic convention fields (`gen_ai.request.model`,
-  `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`) where
-  components have the data
-- Logging collection pipeline extension in odh-observability module to
-  route inference namespace logs to Loki
-- Dependency status surfacing on Monitoring CR when required operators
-  (CLO if Path B, Loki) are missing or unhealthy
-- Multi-tenant log isolation in Loki aligned with Kubernetes namespace
-  RBAC
-- Log query via OpenShift Console by `trace_id`, `service.name`,
-  `k8s.pod.name`, severity, and time range
-- Log-to-trace navigation from OpenShift Console to Tempo via `trace_id`
-- Opt-in request/response content logging for vLLM, gated behind
-  explicit configuration flag (`VLLM_LOG_REQUESTS_CONTENT`)
-- Backwards compatibility for unstructured text log output via
-  configuration toggle (`LOG_FORMAT=text`)
+- Collect native container stdout/stderr from active inference requests in targeted
+  inference namespaces and query the captured entries in Loki. (Objective: #1)
+- Report a specific missing or unreachable logging dependency through Monitoring CR
+  status without interrupting inference or deployment. (Objective: #2)
+- With logging disabled, create no collection resources targeting inference namespaces.
+  (Objective: #3)
+- Prevent a namespace-scoped tenant from reading another tenant's inference request logs.
+  (Objective: #4)
+- Exclude controller reconciliation/lifecycle logs while collecting request logs.
+  (Objective: #5)
+- Observe inference hot-path overhead without changing runtime log serialization.
+  (Objective: #6)
+- Treat stdout/stderr delivery as best effort, not lossless or guaranteed. (Objective: #7)
+- Keep inference and model deployment functional when logging dependencies fail.
+  (Objective: #8)
 
 #### Out of Scope (Other Teams)
 
-- Vendor gateway logging (Envoy access logs, Authorino auth decision
-  logs, Limitador rate-limit logs) -- owned by RHAIRFE-2784
-- DCGM hardware error logs -- owned by RHAIRFE-2784
-- Custom log retention policies -- delegated to cluster admin via CLO
-  configuration
-- Real-time log streaming/tailing UIs beyond the OpenShift Console
-- Log-based alerting rules -- future phase
-- Training workload logging (Ray, training-operator, trainer)
-- Notebook server logging
-- Auto-installation or lifecycle management of CLO or Loki operators --
-  per platform policy (overlay 0008)
-- kserve-agent sidecar logging -- incompatible with RHOAI's
-  RawDeployment-only mode
+- Structured JSON or OTel Logs Data Model formatting, GenAI fields, new trace/span
+  propagation, formatter changes, and vLLM scheduler instrumentation.
+- KServe and `odh-model-controller` reconciliation, status, and lifecycle logs;
+  non-request events from runtime/EPP/MaaS pods and MaaS administrative/quota logs.
+- Vendor gateway (Envoy, Authorino, Limitador), DCGM/node, and `kserve-agent` logs.
+- Automatic installation or lifecycle management of Loki or CLO operators.
+- Mandatory Console-to-Tempo navigation or new log-to-trace correlation fields.
 
 ### 1.3 Test Objectives
 
-1. Verify structured JSON log emission from all inference components
-   (vLLM, llm-d EPP, MaaS, KServe controllers) conforms to OTel Logs
-   Data Model schema with required fields (`timestamp`, `severity`,
-   `body`, `service.name`, `k8s.pod.name`, `k8s.namespace.name`)
-2. Validate `trace_id` and `span_id` correlation between logs and
-   distributed traces across the full inference request path
-   (Gateway -> EPP -> vLLM), enabling log-to-trace navigation in
-   the OpenShift Console
-3. Confirm the logging collection pipeline creates resources and routes
-   inference namespace logs to Loki when dependencies are installed
-   and healthy
-4. Verify dependency status surfacing on Monitoring CR status conditions
-   when required operators are missing or unhealthy, with clear operator
-   identification and installation documentation reference
-5. Validate multi-tenant log isolation in Loki aligned with Kubernetes
-   namespace RBAC, ensuring tenants cannot access logs from other
-   namespaces
-6. Confirm opt-in request/response content logging is gated by an
-   explicit configuration flag and does not log content by default
-7. Verify log queryability by `trace_id`, `service.name`,
-   `k8s.pod.name`, severity, and time range in the OpenShift Console
-   Observe > Logs interface
+1. Show active completions/request-time stdout/stderr entries in the target namespace's
+   Loki query results. (AC: #1 — request logs captured and forwarded)
+2. Inspect Monitoring CR status for a specific missing/unreachable logging dependency.
+   (AC: #2 — dependency status condition)
+3. Inspect collection resources after reconciliation with logging disabled and find none
+   targeting inference namespaces. (AC: #3 — disabled means no collection resources)
+4. Query as two distinct tenants and prevent Tenant A from viewing Tenant B's request
+   logs. (AC: #4 — namespace-scoped Loki isolation)
+5. Trigger controller reconciliation during an inference request and confirm its logs are
+   absent from the inference-request collection results. (AC: #5 — controller exclusion)
+6. Compare request processing with and without collection, without introducing runtime
+   logging-library/serialization changes. (NFR: Performance — no hot-path CPU overhead)
+7. Validate stdout/stderr collection on a best-effort basis, without asserting a
+   lossless-delivery guarantee. (NFR: Delivery Guarantee — best effort)
+8. While a dependency is unavailable, verify inference and model deployment continue.
+   (NFR: Dependency Resilience — workloads continue despite logging failure)
 
 ---
 
@@ -123,155 +92,100 @@ and requires sprint-zero evaluation of the collection pipeline approach
 
 ### 2.1 Test Levels
 
-- **API Integration Testing** -- Structured log emission from
-  REST/gRPC endpoints in vLLM, EPP, MaaS, and KServe controllers;
-  validation that logs include required OTel fields
-- **Data Validation Testing** -- Log schema conformance against OTel
-  Logs Data Model, GenAI semantic convention field validation, JSON
-  parsing correctness
-- **Functional Testing** -- Log collection pipeline creation,
-  dependency status surfacing, log-to-trace correlation, query
-  filtering by `trace_id`/pod name/service name, opt-in content
-  logging gate
-- **Integration Testing** -- End-to-end log flow from component stdout
-  through collection agent (OTel or CLO) to Loki to Console query
-  interface; cross-component trace correlation across vLLM, EPP,
-  and MaaS
-- **Performance Testing** -- Log emission latency (no measurable
-  regression from JSON serialization), log volume handling at high
-  RPS, Loki ingest capacity under load
-- **Security Testing** -- Multi-tenant log isolation via Loki tenant
-  mapping, namespace-scoped RBAC enforcement, opt-in content logging
-  privacy gate validation
+- **E2E System Testing** — Send real requests to deployed inference workloads, inspect
+  Monitoring CR and collection resources, then query Loki as authorized tenants.
 
 ### 2.2 Test Types
 
-- **Positive Testing** -- Valid log emission with all required fields,
-  successful collection pipeline creation, correct schema conformance,
-  `trace_id` correlation across components
-- **Negative Testing** -- Missing dependencies (CLO/Loki unavailable),
-  invalid configuration, Loki backend unreachable, missing W3C
-  traceparent headers, request failures before token count generation
-- **Boundary Testing** -- High RPS inference loads, log volume
-  saturation, OOM-kill scenarios during KV cache pressure, large-scale
-  multi-tenant deployments
-- **Regression Testing** -- Backwards compatibility with unstructured
-  text format (`LOG_FORMAT=text`), no breaking changes to existing
-  `kubectl logs` workflows
+- **Positive** — Request logs from vLLM, EPP and MaaS reach Loki while logging is enabled.
+- **Negative** — Missing/unreachable dependencies, disabled logging, cross-tenant queries,
+  and exclusion of background controller reconciliation output.
+- **Non-functional** — Record request latency and CPU with and without collection; do not
+  impose an unstated threshold or demand guaranteed delivery.
 
 ### 2.3 Test Priorities
 
-- **P0 (Critical)** -- Core structured log emission with
-  `timestamp`/`severity`/`trace_id`/resource attributes from all
-  inference components; logging collection pipeline creation and
-  lifecycle management by odh-observability; dependency status
-  condition surfacing on Monitoring CR; vLLM queue lifecycle logs;
-  EPP routing decision logs
-- **P1 (High)** -- GenAI semantic convention fields on completion logs;
-  log-to-trace navigation in Console; opt-in content logging gate;
-  MaaS tenant/token logs for chargeback; multi-tenant log isolation;
-  schema conformance automated tests
-- **P2 (Medium)** -- Per-component log schema documentation validation;
-  telemetry contract alignment (RHAIRFE-2227); backwards compatibility
-  validation (text format toggle)
+- **P0 (Critical)** — Request-log delivery, dependency status, and disabled logging
+  correspond to the strategy's P0 requirements. (Objective: #1)
+- **P1 (High)** — Namespace isolation and exclusion of controller reconciliation logs.
+  (Objective: #4)
+- **P2 (Medium)** — Performance baseline and best-effort delivery observations, without
+  a strategy-specified numeric gate. (Objective: #6)
 
 ---
 
 ## 3. Test Environment
 
-### 3.1 Test Cluster Configuration
+### 3.1 Infrastructure & Configuration
 
-- **OpenShift version**: 4.16+ (minimum supported for RHOAI 3.6-ea.1)
-- **RHOAI version**: 3.6
-- **Inference components**: vLLM (llm-d), llm-d-inference-scheduler
-  (EPP), models-as-a-service (MaaS), KServe controllers,
-  odh-model-controller, odh-observability
-- **External operators** (admin-installed, not auto-provisioned):
-  - Loki Operator with LokiStack (required for all paths)
-  - Cluster Logging Operator v6 (conditional -- only if Path B
-    chosen during sprint-zero evaluation)
-  - Tempo Operator (for trace correlation)
-  - OpenTelemetry Operator
-- **GPU requirements**: GPU-equipped cluster for KV cache pressure
-  testing (AC 6) -- weekly cadence on dedicated QE cluster
-- **Runtimes**: Python (vLLM engine), Go 1.25 (EPP, MaaS, KServe
-  controllers)
+- OpenShift cluster running RHOAI inference workloads with `odh-observability` enabled,
+  including a deployed vLLM runtime and request paths through EPP and MaaS. Target
+  release is RHOAI 3.6 per the original test-plan context; confirm exact builds with
+  the release owner before execution (the current strategy sets no version floor).
+- Two distinct user inference namespaces containing workloads capable of producing
+  recognizable request-time stdout/stderr entries; a separate controller workload
+  that can be reconciled while those requests run.
+- Healthy, admin-installed Loki backend and the selected collection pipeline. CLO is
+  required **only** if sprint-zero selects Path B; Path A uses existing OTel-to-LokiStack.
+- Accessible `services.platform.opendatahub.io/v1alpha1` Monitoring CR for setting
+  logging on/off and reading status. The actual toggle and condition schema must be
+  taken from RHAISTRAT-2416 design; do not use an assumed field name or reason.
+- Deliberately isolated test environment for temporarily making logging dependencies
+  unavailable. Obtain an approved reversible failure-injection procedure before use.
 
 ### 3.2 Test Data Requirements
 
-- **Structured log samples**: JSON log entries conforming to OTel Logs
-  Data Model with fields: `timestamp`, `severity`, `body`,
-  `service.name`, `k8s.pod.name`, `k8s.namespace.name`, `trace_id`,
-  `span_id`
-- **W3C traceparent headers**: For trace correlation testing across
-  Gateway -> EPP -> vLLM request path
-- **Mock inference requests**: Known prompts with expected token counts
-  for content logging and GenAI semconv field validation
-- **Configuration artifacts**:
-  - Monitoring CR YAML with logging subsection (schema TBD in
-    sprint-zero, coordinated with RHAISTRAT-2416)
-  - LokiStack configuration with multi-tenancy (namespace-to-tenant
-    mapping)
-  - OTel collector configuration (if Path A) or CLO
-    ClusterLogForwarder resources (if Path B)
-- **Model artifacts**: LLMInferenceService deployments for vLLM runtime
-  testing
-- **Scenario-specific data**:
-  - Quota-exceeded trigger data for MaaS rejection logs (AC 3)
-  - KV cache pressure scenario data for vLLM discard logs (AC 6)
-  - Multi-namespace tenant configurations for isolation testing
-    (AC 13)
+- Synthetic completions calls to vLLM; capture namespace, pod, UTC request window and
+  a unique non-sensitive request marker (e.g., `qe-log-2413-a-001`) **only if the native
+  request log includes it**. Otherwise identify the entry by known request-path text,
+  pod and narrow time range; do not require a new log schema or echoed prompt.
+- EPP request dispatch and MaaS request proxy traffic with independently identifiable
+  native log entries. Determine representative message patterns from installed builds.
+- Separate synthetic requests and log-query identities for tenants A and B; query each
+  tenant's namespace and the other tenant's namespace in both directions.
+- Controller reconciliation output emitted during the same bounded time window acts as
+  an exclusion sentinel; identify by controller pod and native message, not assumed JSON.
+- Healthy, missing and unreachable dependency states; preserve before/after Monitoring
+  CR status snapshots and evidence that inference requests still complete.
 
 ### 3.3 Test Users
 
-- **Cluster admin**: For installing external operators (CLO, Loki
-  Operator, Tempo Operator, OpenTelemetry Operator) and configuring
-  DSCInitialization
-- **Namespace admin** (llm-d-as-a-service tenancy): Full visibility to
-  all inference logs in their namespaces
-- **Platform team user** (MaaS tenancy): Full log access across
-  inference namespaces for SLA breach investigation
-- **MaaS tenant users**: Two or more tenants in separate namespaces
-  for multi-tenant isolation testing (AC 13) -- tenants must NOT see
-  each other's logs
-- **Service accounts**:
-  - OTel collector service account with
-    `lokistack-application-logs-writer` ClusterRoleBinding
-  - Inference component service accounts for LLMInferenceService
-    and InferenceService pods
+- Test-only cluster administrator: may update/read the Monitoring CR and list the selected
+  collection resources wherever the implementation deploys them.
+- Tenant A and Tenant B: distinct synthetic namespace-scoped query identities, permitted
+  to read their own namespace's Loki inference logs and denied cross-namespace query.
+  The exact Loki roles/resources and Kubernetes-to-Loki mapping are a blocking design
+  gap; the tenant isolation test cannot run until this permission contract is documented.
+- Collection-pipeline service account: permissions to read targeted inference container
+  logs and write to Loki; actual bindings depend on the selected pipeline implementation.
+
+### 3.4 Test Tools
+
+- `oc` to inspect Monitoring CR, selected collection resources, pod logs and deployment
+  readiness; inference request client suitable for the deployed vLLM/EPP/MaaS routes.
+- OpenShift Console Observe > Logs with synthetic tenant credentials for request-log
+  queries; use a supported Loki query client for full-output exclusion verification
+  only when the implementation exposes one. UI layout is not an acceptance gate.
+- Request latency and CPU collection tools for the descriptive performance baseline.
 
 ---
 
-## 4. Components and Methods Under Test
+## 4. Interfaces Under Test
 
-| Component / Method | Type | Purpose | Priority |
-|--------------------|------|---------|----------|
-| vLLM JSON log formatter | Python logging module | Emit structured JSON logs to stdout with OTel schema | P0 |
-| vLLM queue lifecycle event emission | Python method | Emit enqueue/dequeue/timeout/discard logs with reason and engine identity | P0 |
-| llm-d EPP OTel SDK integration | Go method | Propagate `trace_id`/`span_id` via W3C traceparent | P0 |
-| KServe controller lifecycle log emission | Go/controller-runtime | Emit LLMInferenceService reconciliation, status transition, error logs | P0 |
-| odh-observability Monitoring CR reconciliation | Go controller | Reconcile Monitoring CR and create/update logging collection resources | P0 |
-| odh-observability dependency status management | Go controller | Surface missing/unhealthy dependency status on Monitoring CR | P0 |
-| odh-observability logging resource creation | Go controller | Create OTel collector config or CLO ClusterLogForwarder resources | P0 |
-| Monitoring CR logging subsection | CRD field | Configure logging collection pipeline (schema pending sprint-zero) | P0 |
-| Loki log ingestion endpoint | REST API | Receive structured logs from OTel collector or CLO | P0 |
-| Loki multi-tenant isolation | Config | Map Kubernetes namespaces to Loki tenants for RBAC-aligned isolation | P0 |
-| llm-d EPP routing decision log emission | Go/zap | Emit logs with engine selected, reason, queue depth, KV-cache util | P1 |
-| MaaS routing rejection log emission | Go/Gin | Emit rejection logs with tenant identity, model name, reason, `trace_id` | P1 |
-| MaaS tenant/token log emission | Go/Gin | Emit logs with tenant identity, model name, token counts, `trace_id` | P1 |
-| vLLM GenAI semconv field emission | Python method | Include `gen_ai.request.model`, `gen_ai.usage.*_tokens` on completions | P1 |
-| vLLM opt-in content logging | Python method | Emit prompt/completion content when `VLLM_LOG_REQUESTS_CONTENT=true` | P1 |
-| LLMInferenceServiceConfig content logging flag | CRD field | Surface `VLLM_LOG_REQUESTS_CONTENT` per versioned base config | P1 |
-| Loki log query API (via Console) | REST API | Query logs by `trace_id`, `service.name`, `k8s.pod.name`, severity | P1 |
-| OpenShift Console Observe > Logs interface | UI | Filter and display logs from Loki | P1 |
-| OpenShift Console log-to-trace navigation | UI | Navigate from log entry `trace_id` to Tempo trace view | P1 |
-| vLLM `LOG_FORMAT` env var | Config | Toggle between JSON (default) and text log output | P2 |
+| Interface | Type | Purpose |
+|-----------|------|---------|
+| Inference request client (vLLM / EPP / MaaS) | CLI | Generate active request-path logs; actual protocol/route must be confirmed per deployment |
+| Monitoring CR (`services.platform.opendatahub.io/v1alpha1`) | CRD | Toggle collection and inspect dependency conditions; schema pending RHAISTRAT-2416 |
+| Cluster collection resources | CLI | Inspect selected collection resources wherever deployed; kind and location pending design |
+| OpenShift Console Observe > Logs | UI | Query Loki-backed request entries as each tenant; tenancy contract pending design |
+
+The CLI row identifies the test client's interaction, not an asserted inference API
+protocol. Confirm actual client/route before execution. The Console query UI is described
+in the strategy. Do not guess routes, CR field paths, resource kinds or Loki query headers.
 
 ---
 
 ## 5. Test Cases
-
-**51 test cases** generated across 12 categories (24 P0, 24 P1, 3 P2).
 
 **Test Cases Directory**: [test_cases/](test_cases/)
 **Complete Test Case Index**: [test_cases/INDEX.md](test_cases/INDEX.md)
@@ -280,127 +194,71 @@ and requires sprint-zero evaluation of the collection pipeline approach
 
 | Category | Test Cases | Priority Distribution |
 |----------|------------|----------------------|
-| TC-SCHEMA | 6 | 3 P0, 3 P1 |
-| TC-EMIT | 4 | 3 P0, 1 P1 |
-| TC-QUEUE | 4 | 4 P0 |
-| TC-ROUTE | 5 | 5 P1 |
-| TC-PIPE | 5 | 4 P0, 1 P1 |
-| TC-DEP | 4 | 3 P0, 1 P1 |
-| TC-QUERY | 5 | 5 P1 |
-| TC-TRACE | 4 | 1 P0, 3 P1 |
-| TC-TENANT | 3 | 1 P0, 2 P1 |
-| TC-PRIV | 3 | 3 P1 |
-| TC-COMPAT | 3 | 3 P2 |
-| TC-E2E | 5 | 5 P0 |
+| TC-E2E | 6 | 4 P0, 2 P1 |
+| TC-NFR | 1 | 1 P2 |
 
 ### 5.2 Test Case Naming Convention
 
-Test cases follow the naming pattern: `TC-<CATEGORY>-<NUMBER>`
-
-- `TC-SCHEMA` -- Log schema conformance and OTel field validation
-- `TC-EMIT` -- Log emission from individual inference components
-- `TC-QUEUE` -- vLLM queue lifecycle event logging
-- `TC-ROUTE` -- EPP routing decision and MaaS rejection logging
-- `TC-PIPE` -- Collection pipeline creation and lifecycle
-- `TC-DEP` -- Dependency status surfacing on Monitoring CR
-- `TC-QUERY` -- Log query and filtering via Loki/Console
-- `TC-TRACE` -- Log-to-trace correlation and navigation
-- `TC-TENANT` -- Multi-tenant log isolation
-- `TC-PRIV` -- Opt-in content logging and privacy controls
-- `TC-COMPAT` -- Backwards compatibility (text format toggle)
-- `TC-E2E` -- End-to-end scenarios across multiple components
+- `TC-E2E-*`: deployed inference request and collection user journeys.
+- `TC-NFR-*`: comparative inference overhead with and without log collection.
 
 ---
 
 ## 6. E2E Test Scenarios
 
-End-to-end scenarios that validate the user journeys defined in the
-strategy. Each scenario maps to one or more TC-E2E-*.md test cases
-generated by `/test-plan-create-cases`.
-
-> **Requirement**: At least one E2E scenario MUST be generated for
-> each P0 endpoint in Section 4.
-> E2E scenarios will be filled by `/test-plan-create-cases`.
-
 ### 6.1 Scenario Summary
 
-| ID | Scenario | Endpoints Covered | Priority |
+| ID | Scenario | Interfaces Covered | Priority |
 |----|----------|-------------------|----------|
-| TC-E2E-001 | End-to-end structured log emission and collection | vLLM log formatter, Loki ingestion, Monitoring CR reconciliation, logging resource creation | P0 |
-| TC-E2E-002 | Cross-component trace correlation through inference path | EPP OTel SDK, vLLM log formatter, Console log-to-trace navigation | P0 |
-| TC-E2E-003 | Collection pipeline lifecycle and dependency surfacing | Monitoring CR reconciliation, dependency status management, logging resource creation, Monitoring CR logging subsection | P0 |
-| TC-E2E-004 | Multi-tenant log isolation in MaaS deployment | Loki multi-tenant isolation, MaaS tenant/token emission, Loki query API | P0 |
-| TC-E2E-005 | vLLM queue lifecycle debugging workflow | vLLM queue lifecycle emission, Loki ingestion, Loki query API | P0 |
+| TC-E2E-001 | Inference request log reaches Loki | Inference request client, Console | P0 |
+| TC-E2E-002 | Missing dependency is surfaced; workloads continue | Monitoring CR, inference request client | P0 |
+| TC-E2E-003 | Disabled logging creates no targeting resources | Monitoring CR, collection resources | P0 |
+| TC-E2E-004 | Tenants cannot query each other's request logs | Inference request client, Console | P1 |
+| TC-E2E-005 | Controller logs excluded during active requests | Inference request client, Console | P1 |
+| TC-E2E-006 | Unreachable dependency is surfaced; deployment continues | Monitoring CR, inference request client | P0 |
 
 ### 6.2 E2E Coverage Matrix
 
-| Endpoint (from Section 4) | E2E Scenarios |
+| Interface (from Section 4) | E2E Scenarios |
 |----------------------------|---------------|
-| vLLM JSON log formatter | TC-E2E-001, TC-E2E-002 |
-| vLLM queue lifecycle event emission | TC-E2E-005 |
-| llm-d EPP OTel SDK integration | TC-E2E-002 |
-| KServe controller lifecycle log emission | TC-E2E-001 |
-| odh-observability Monitoring CR reconciliation | TC-E2E-001, TC-E2E-003 |
-| odh-observability dependency status management | TC-E2E-003 |
-| odh-observability logging resource creation | TC-E2E-001, TC-E2E-003 |
-| Monitoring CR logging subsection | TC-E2E-003 |
-| Loki log ingestion endpoint | TC-E2E-001, TC-E2E-005 |
-| Loki multi-tenant isolation | TC-E2E-004 |
+| Inference request client (vLLM / EPP / MaaS) | TC-E2E-001, TC-E2E-002, TC-E2E-004, TC-E2E-005, TC-E2E-006 |
+| Monitoring CR (`services.platform.opendatahub.io/v1alpha1`) | TC-E2E-002, TC-E2E-003, TC-E2E-006 |
+| Cluster collection resources | TC-E2E-003 |
+| OpenShift Console Observe > Logs | TC-E2E-001, TC-E2E-004, TC-E2E-005 |
 
 ---
 
 ## 7. Non-Functional Requirements
 
-Each category below must be explicitly addressed. If a category
-does not apply to this feature, state **Not Applicable** with a
-brief justification.
-
 ### 7.1 Disconnected/Air-Gapped
 
-Validate that external operator dependencies (Loki Operator, and CLO
-if Path B collection is chosen) can be installed in disconnected
-OpenShift environments with mirrored operator catalogs. Verify that the
-logging collection pipeline itself does not introduce runtime
-dependencies on external registries or network-accessible resources
-beyond the in-cluster Loki backend. Test that structured logs are
-emitted and collected successfully when all images are pulled from a
-disconnected registry.
+**Not Applicable** — the current strategy does not establish a disconnected-deployment
+acceptance gate. It explicitly leaves Loki and conditional CLO installation to the admin.
 
 ### 7.2 Upgrade/Migration
 
-Validate upgrade scenarios where logging is enabled on an existing
-RHOAI deployment. Test Monitoring CR schema extensions for backwards
-compatibility -- clusters without logging configuration should continue
-to operate unchanged. Verify that components can migrate from
-unstructured text logs to structured JSON logs without disrupting
-existing `kubectl logs` workflows (`LOG_FORMAT` toggle). Test that
-Monitoring CR schema changes coordinated with RHAISTRAT-2416 do not
-conflict or create duplicate collection resources. Validate rollback
-scenarios where logging is disabled after being enabled.
+**Not Applicable** — the current strategy introduces no log-format migration or upgrade
+acceptance criterion. The Monitoring CR schema change is pending coordination with
+RHAISTRAT-2416; assess upgrade compatibility separately once that contract exists.
 
 ### 7.3 Performance/Scalability
 
-Measure JSON serialization latency added by structured logging to
-ensure no measurable regression in inference request latency (strategy
-specifies "best effort, no measurable regression" bar per PM decision).
-Validate log collection pipeline throughput under realistic RPS loads
-(100, 500, 1000 RPS across 4 components generating estimated
-~350GB/day at peak). Test Loki ingest capacity and query performance
-under sustained high log volume. Verify that log emission does not
-degrade inference path performance when content logging is disabled
-(default). Conduct Loki sizing proof-of-concept to produce retention
-and storage recommendations for production deployments.
+- Compare request latency and runtime CPU with collection enabled and disabled under
+  equivalent synthetic load; record baseline and any differences rather than asserting
+  a threshold not specified by the strategy. (Objective: #6)
+- Observe collector and Loki backlog/storage under representative load and retain evidence
+  of best-effort delivery; do not demand exactly-once ingestion. (Objective: #7)
 
 ### 7.4 RBAC/Authorization
 
-Validate that Loki tenant mapping aligns with Kubernetes namespace
-RBAC to prevent cross-tenant log exposure in model-as-a-service
-deployments (AC 13). Verify that MaaS tenants querying Loki cannot
-access logs from other tenant namespaces or platform-internal logs.
-Test that OTel collector or CLO service accounts have correctly scoped
-permissions (`lokistack-application-logs-writer` ClusterRoleBinding).
-Ensure that namespace-scoped users can only query logs from namespaces
-they have access to via standard Kubernetes RBAC.
+- Query each tenant's own and the other tenant's inference namespace as distinct
+  namespace-scoped identities; fail if cross-tenant request entries are visible.
+  (Objective: #4)
+
+### 7.5 Security
+
+- **Not Applicable** — the strategy defines no new authentication, TLS, credential
+  storage, or audit-logging mechanism. Cross-tenant access control is tested in 7.4.
 
 ---
 
@@ -408,131 +266,41 @@ they have access to via standard Kubernetes RBAC.
 
 | Risk | Impact | Probability | Mitigation |
 |------|--------|-------------|------------|
-| Collection pipeline approach uncertainty (OTel Path A vs CLO Path B) -- choice determines external dependencies and architecture | High | High | Sprint-zero joint evaluation with logging team and Platform/Observability team. Prefer Path A if viable. If Path B, abstract resource creation behind version-aware factory. |
-| RHAISTRAT-2416 Monitoring CR schema conflict -- both strategies extend same CR for logging configuration | High | High | Joint schema design session during sprint-zero. Single coordinated logging subsection in Monitoring CR spec. |
-| Trace context propagation gaps -- W3C traceparent may be stripped in Gateway -> EPP -> vLLM chain | High | Medium | Validate end-to-end traceparent propagation during sprint 1. Add forwarding to any component that does not propagate it. |
-| RHAII coordination for vLLM queue lifecycle instrumentation -- requires scheduler-level changes in fork-based multiprocessing internals | Medium | Medium | Phase work: (1) JSON formatter wrapper (low risk), (2) queue lifecycle instrumentation (higher risk, scheduler expertise). Engage RHAII early. |
-| Log volume overload at high RPS -- ~350GB/day at 1000 RPS could overwhelm Loki ingest capacity | High | Medium | Default log levels to INFO; content logging gated behind flag. Conduct Loki sizing PoC before GA rollout. |
-| Multi-tenant log isolation failure -- incorrect Loki tenant mapping could expose cross-tenant logs | High | Low | Align Loki tenancy with Kubernetes namespace RBAC. Include isolation validation in acceptance tests (AC 13). |
-| OOM-kill log loss -- kernel-buffered stdout may not flush before process termination | Medium | Medium | Document limitation. Correlate with OOM-kill kubelet events and DCGM metrics. Queue lifecycle logs emit at enqueue time. |
-| GenAI semconv field instability -- experimental OTel field names may change | Low | Medium | Centralize field name constants per component for coordinated rename. |
-| Console log-to-trace navigation may require new plugin work | Medium | Medium | Validate Console plugin configuration for Tempo datasource in sprint 1. Scope as separate task if needed. |
+| Collector path (OTel vs conditional CLO) is unresolved | High | High | Record sprint-zero choice before path-specific assertions (Objective: #1) |
+| Monitoring CR schema conflicts with RHAISTRAT-2416 | High | Medium | Coordinate toggle/condition contract and test disabled reconciliation (Objective: #3) |
+| Missing Loki backend disrupts active inference | High | Medium | Inject failure on a dedicated cluster; check status and workload continuity (Objective: #8) |
+| Tenant mapping exposes other namespaces' request logs | High | Medium | Test both A→B and B→A queries with synthetic identities (Objective: #4) |
+| Collector accidentally includes controller logs | Medium | Medium | Trigger reconciliation in request window and query for exclusion sentinel (Objective: #5) |
+| High request volume exhausts Loki storage | Medium | Medium | Record representative load and document sizing; strategy sets no numeric bound (Objective: #7) |
 
 ---
 
-## 9. Test Environment Requirements
+## 9. Appendix
 
-### 9.1 Infrastructure
-
-- **Multi-tenant cluster**: Namespace isolation for llm-d-as-a-service
-  and MaaS tenancy models
-- **GPU-equipped cluster**: Weekly cadence for KV cache pressure tests
-  (AC 6); provisioned via Hive, shared across inference test suite
-- **Shared QE cluster**: Non-GPU tests with per-test-run namespace
-  isolation (multi-tenant, persistent)
-- **Inference pool**: Multiple vLLM engine pods for pod-specific log
-  filtering (AC 10)
-- **LokiStack deployment**: Via Loki Operator (OpenShift-managed mode)
-- **Tempo deployment**: For distributed trace storage and log-to-trace
-  correlation
-- **Collection agent**: OTel collector (Path A) or CLO v6 (Path B) --
-  determined by sprint-zero evaluation
-
-### 9.2 Configuration
-
-- **Environment variables**:
-  - `LOG_FORMAT=json` / `LOG_FORMAT=text` (vLLM structured vs
-    unstructured output)
-  - `VLLM_LOG_REQUESTS_CONTENT=true` / `false` (opt-in content
-    logging)
-  - `VLLM_WORKER_MULTIPROC_METHOD=fork` (vLLM process model)
-- **Custom resources**:
-  - Monitoring CR (`services.platform.opendatahub.io/v1alpha1`)
-    with logging subsection -- schema TBD in sprint-zero,
-    coordinated with RHAISTRAT-2416
-  - DSCInitialization for odh-observability lifecycle
-  - LLMInferenceServiceConfig template for surfacing
-    `VLLM_LOG_REQUESTS_CONTENT` flag (overlay 0022)
-- **Operator subscriptions**: Loki Operator, Tempo Operator,
-  OpenTelemetry Operator, and CLO (if Path B)
-- **Loki multi-tenancy**: Namespace-to-tenant ID mapping via logging
-  pipeline resources
-
-### 9.3 Test Tools
-
-- **Kubernetes tools**: `kubectl`, `oc` for pod logs, resource
-  inspection; `kustomize` for manifest management
-- **Log viewing and query**: OpenShift Console Observe > Logs interface
-  (Loki query with LogQL filtering)
-- **Log parsing and validation**: `jq` for JSON schema conformance
-  validation
-- **API testing**: `curl` or `grpcurl` for triggering inference
-  requests with trace context injection
-- **Trace visualization**: Tempo UI for viewing distributed traces and
-  validating log-to-trace correlation
-- **Stdout inspection**: `kubectl logs` for direct container log access
-  (fallback when collection pipeline unavailable)
-- **Performance testing**: High-RPS load generation for Loki sizing PoC
-  (100, 500, 1000 RPS tiers)
-- **Scenario triggers**: Python scripts or Go test harnesses for
-  quota-exceeded, KV cache pressure, and multi-tenant isolation
-  scenarios
-- **Schema validators**: OTel Logs Data Model and telemetry contract
-  (RHAIRFE-2227) conformance testing
-
----
-
-## 10. Appendix
-
-### 10.1 Test Case Summary
+### 9.1 Test Case Summary
 
 | Category | Total | P0 | P1 | P2 |
-|----------|-------|----|----|-----|
-| TC-SCHEMA | 6 | 3 | 3 | 0 |
-| TC-EMIT | 4 | 3 | 1 | 0 |
-| TC-QUEUE | 4 | 4 | 0 | 0 |
-| TC-ROUTE | 5 | 0 | 5 | 0 |
-| TC-PIPE | 5 | 4 | 1 | 0 |
-| TC-DEP | 4 | 3 | 1 | 0 |
-| TC-QUERY | 5 | 0 | 5 | 0 |
-| TC-TRACE | 4 | 1 | 3 | 0 |
-| TC-TENANT | 3 | 1 | 2 | 0 |
-| TC-PRIV | 3 | 0 | 3 | 0 |
-| TC-COMPAT | 3 | 0 | 0 | 3 |
-| TC-E2E | 5 | 5 | 0 | 0 |
-| **Total** | **51** | **24** | **24** | **3** |
+|----------|-------|----|----|----|
+| TC-E2E | 6 | 4 | 2 | 0 |
+| TC-NFR | 1 | 0 | 0 | 1 |
+| **Total** | **7** | **4** | **2** | **1** |
 
-### 10.2 Component Coverage
+### 9.2 Interface Coverage
 
-| Component / Method | Test Cases | Coverage |
-|--------------------|------------|----------|
-| vLLM JSON log formatter | TC-SCHEMA-001, TC-EMIT-001, TC-E2E-001, TC-E2E-002 | |
-| vLLM queue lifecycle event emission | TC-QUEUE-001, TC-QUEUE-002, TC-QUEUE-003, TC-QUEUE-004, TC-E2E-005 | |
-| llm-d EPP OTel SDK integration | TC-SCHEMA-002, TC-EMIT-002, TC-TRACE-001, TC-E2E-002 | |
-| KServe controller lifecycle log emission | TC-SCHEMA-004, TC-EMIT-004, TC-E2E-001 | |
-| odh-observability Monitoring CR reconciliation | TC-PIPE-001, TC-PIPE-004, TC-E2E-003 | |
-| odh-observability dependency status management | TC-DEP-001, TC-DEP-002, TC-DEP-003, TC-DEP-004, TC-E2E-003 | |
-| odh-observability logging resource creation | TC-PIPE-002, TC-PIPE-003, TC-PIPE-005, TC-E2E-001, TC-E2E-003 | |
-| Monitoring CR logging subsection | TC-PIPE-001, TC-PIPE-004, TC-E2E-003 | |
-| Loki log ingestion endpoint | TC-E2E-001, TC-E2E-005 | |
-| Loki multi-tenant isolation | TC-TENANT-001, TC-TENANT-002, TC-TENANT-003, TC-E2E-004 | |
-| llm-d EPP routing decision log emission | TC-ROUTE-001, TC-ROUTE-002 | |
-| MaaS routing rejection log emission | TC-ROUTE-003, TC-ROUTE-004 | |
-| MaaS tenant/token log emission | TC-EMIT-003, TC-ROUTE-005, TC-E2E-004 | |
-| vLLM GenAI semconv field emission | TC-SCHEMA-005, TC-SCHEMA-006 | |
-| vLLM opt-in content logging | TC-PRIV-001, TC-PRIV-002 | |
-| LLMInferenceServiceConfig content logging flag | TC-PRIV-003 | |
-| Loki log query API (via Console) | TC-QUERY-001, TC-QUERY-002, TC-QUERY-003, TC-QUERY-004, TC-QUERY-005 | |
-| OpenShift Console Observe > Logs interface | TC-QUERY-001, TC-QUERY-002, TC-QUERY-003, TC-QUERY-004, TC-QUERY-005 | |
-| OpenShift Console log-to-trace navigation | TC-TRACE-003, TC-TRACE-004, TC-E2E-002 | |
-| vLLM `LOG_FORMAT` env var | TC-COMPAT-001, TC-COMPAT-002, TC-COMPAT-003 | |
+| Interface | Test Cases | Coverage |
+|-----------|------------|----------|
+| Inference request client (vLLM / EPP / MaaS) | TC-E2E-001, TC-E2E-002, TC-E2E-004, TC-E2E-005, TC-E2E-006, TC-NFR-001 | |
+| Monitoring CR (`services.platform.opendatahub.io/v1alpha1`) | TC-E2E-002, TC-E2E-003, TC-E2E-006 | |
+| Cluster collection resources | TC-E2E-003 | |
+| OpenShift Console Observe > Logs | TC-E2E-001, TC-E2E-004, TC-E2E-005 | |
 
-### 10.3 Document Change Log
+### 9.3 Document Change Log
 
 | Version | Date | Changes |
 |---------|------|---------|
-| 1.0.0 | 2026-08-17 | Initial test plan |
+| 1.0.0 | 2026-08-17 | Original structured-logging plan (superseded) |
+| 1.2.0 | 2026-11-03 | Rebased on Aug 26 request-log-only strategy; replaced stale cases |
 
 ---
 
-**End of Test Plan**
+## End of Test Plan

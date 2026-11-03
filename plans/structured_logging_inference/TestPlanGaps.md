@@ -2,102 +2,56 @@
 feature: structured_logging_inference
 source_key: RHAISTRAT-2413
 status: Open
-gap_count: 16
-last_updated: '2026-08-17'
+gap_count: 9
+last_updated: '2026-11-03'
 ---
-# Gaps -- Structured Logging for Inference Components
+# Gaps — Inference Request Log Collection
 
-## Scope & Endpoints
+The current Jira strategy was revised on August 26, 2026. These are outstanding
+implementation and execution details, not permission to reinstate the descoped
+structured-logging requirements. Seven current-scope cases are drafted, but their
+cluster-specific steps cannot be made fully executable without the contracts below.
 
-- **Monitoring CR schema not yet designed** -- Field structure, defaults,
-  and validation CEL rules are sprint-zero work coordinated with
-  RHAISTRAT-2416. No concrete field names or structure specified yet.
-  Would be resolved by: ADR or design doc from sprint-zero joint session
-  with RHAISTRAT-2416 owners and Platform/Observability team.
+## Blocking test execution
 
-- **Collection pipeline approach unresolved (OTel vs CLO)** -- Sprint-zero
-  evaluation required to determine whether to extend existing
-  OTel-to-LokiStack pipeline (Path A, no CLO dependency) or add
-  CLO-based collection (Path B, CLO v6). Affects infrastructure
-  requirements, test configuration, and external dependencies. Would be
-  resolved by: sprint-zero evaluation deliverable documenting the
-  approach selection and architectural justification.
+1. **Collection architecture and selectors** — Sprint-zero must choose existing OTel
+   Path A or CLO Path B and document collection resource kinds, namespace/pod selection
+   rules and resources that should not exist when logging is disabled (AC #1, #3, #5).
+   Resolve with an Observability/Logging design decision and deployed configuration.
+2. **Monitoring CR contract** — Logging toggle field/default, reconciliation completion
+   signal, dependency condition type/reasons and recovery state are unspecified (AC #2,
+   #3). Resolve with the Monitoring CR API/schema coordinated with RHAISTRAT-2416.
+3. **Loki tenancy/RBAC contract** — Namespace-to-Loki tenant mapping, synthetic user
+   roles and permissions, query authentication, and authorization behavior are
+   unspecified (AC #4). Resolve with the selected pipeline's security design; do not
+   test as cluster admin in place of a tenant.
+4. **Native request-log evidence** — Specific native vLLM, EPP and MaaS messages and
+   testable inference request entry points depend on the deployed build; no new JSON
+   fields or request identifiers are required (AC #1, #5). Resolve with request-path
+   test fixtures and log samples on the target release.
+5. **Failure-injection/recovery procedure** — No approved procedure for simulating a
+   missing and unreachable logging backend or selected collector while preserving
+   inference traffic is documented (AC #2; Dependency Resilience NFR). Resolve with
+   a platform-owned reversible test procedure on a dedicated cluster.
 
-- **vLLM queue lifecycle API details missing** -- Deeper than the JSON
-  formatter wrapper; requires scheduler-level changes in RHAII codebase
-  intertwined with fork-based multiprocessing model. Scope and
-  feasibility need early validation with RHAII. Would be resolved by:
-  design doc or feature refinement from RHAII team engagement.
+## Non-blocking scope / measurement decisions
 
-- **W3C traceparent propagation chain not validated end-to-end** -- Strategy
-  marks this as "needs validation" and notes it "may expand if gaps are
-  found" in the Gateway -> EPP -> vLLM chain. Each gap would require
-  forwarding code. Would be resolved by: sprint-1 validation deliverable
-  documenting propagation status and identifying specific gaps.
+1. **Version matrix** — Current strategy sets no OCP, RHOAI, collector or Loki version
+   floor. Resolve exact target builds with release owner before execution.
+2. **Best-effort and performance gates** — No numerical overhead, collector backlog,
+   delivery window or acceptable loss threshold is specified. TC-NFR-001 records
+   comparative evidence only; PM/engineering must set a threshold if a CI gate is wanted.
+3. **Runtime opt-in content logging** — P1 high-level requirement has no acceptance
+   criterion, flag name or expected default/format. Keep it out of the seven AC-traced
+   cases unless a runtime-specific contract and criterion are supplied.
+4. **Optional query/correlation behavior** — Console filters and correlation via an
+   already-present `trace_id` are described without a separate AC; no new trace fields
+   or Console-to-Tempo navigation is required. Define any extra validation explicitly
+   before adding cases.
 
-- **Console log-to-trace navigation requirements unclear** -- May require
-  new Console plugin work for Tempo datasource configuration beyond what
-  odh-observability currently provides. Would be resolved by: sprint-1
-  validation deliverable from Console team.
+## Superseded gaps
 
-- **GenAI semantic convention field stability unknown** -- `gen_ai.*`
-  fields are in OTel experimental status; field names may change before
-  stabilization. Would be resolved by: engineering monitoring of OTel
-  GenAI semconv stabilization status.
-
-- **Log delivery latency and query performance thresholds undefined** --
-  No numeric thresholds defined for log delivery latency or Loki query
-  response time under load. Would be resolved by: PM/Engineering
-  decision based on Loki sizing PoC baseline measurements.
-
-## Test Strategy & Risks
-
-- **vLLM queue lifecycle instrumentation implementation approach** --
-  Strategy acknowledges this is "deeper than the general JSON formatter"
-  and requires "scheduler-level changes," but exact instrumentation
-  points, effort, and RHAII capacity are not fully scoped. Would be
-  resolved by: ADR or design doc detailing vLLM scheduler
-  instrumentation approach, validated with RHAII team.
-
-- **Design doc and ADR explicitly marked as "To be created"** -- Strategy
-  calls out that design doc and ADR (if needed) are not yet written.
-  Would be resolved by: design doc covering collection pipeline
-  architecture, Monitoring CR schema, and cross-component integration;
-  ADR for collection pipeline approach decision (Path A vs Path B).
-
-## Environment & Infrastructure
-
-- **CLO API version confirmation** -- If Path B is chosen, need to
-  confirm CLO v5 vs v6 API version with logging team. Affects controller
-  implementation and test environment setup. Would be resolved by: API
-  spec or feature refinement from CLO/logging team.
-
-- **vLLM JSON formatter prototype validation** -- Needs RHAII team
-  validation that custom Python logging formatter works with current
-  vLLM codebase. Affects test data structure and formatter
-  configuration. Would be resolved by: design doc or prototype report
-  from RHAII team sprint-zero validation.
-
-- **Loki sizing guidance not available** -- Requires PoC deployment to
-  gather realistic log volume numbers at representative RPS tiers (100,
-  500, 1000 RPS) across 4 components. Estimated ~350GB/day at 1000 RPS.
-  Blocks GA rollout but not sprint 1. Would be resolved by: performance
-  report from Platform/Observability + Logging team PoC.
-
-- **RHAII deployment-specific logging pipeline** -- RFE (RHAIRFE-2776)
-  confirms RHAII is explicitly in-scope for chargeback use cases and
-  documentation ("the solution should factor in how these use cases are
-  enabled on both RHOAI and RHAII"). However, the RFE does not specify
-  how the logging pipeline differs between RHOAI and RHAII. Would be
-  resolved by: feature refinement clarifying RHAII vs RHOAI logging
-  pipeline differences.
-
-- **Test environment OCP version matrix** -- Strategy specifies 4.16+
-  for RHOAI 3.6-ea.1 but doesn't specify if older OCP versions need
-  testing for backports or compatibility. Would be resolved by: feature
-  refinement specifying full OCP version support matrix.
-
-- **Log pipeline throughput and query performance thresholds** -- No
-  numeric thresholds for log delivery latency or Loki query response
-  time. Loki sizing PoC should produce baseline numbers. Would be
-  resolved by: performance report from Loki sizing PoC.
+The prior 16-gap list concerned the older 20-AC strategy. JSON formatter,
+GenAI schema, vLLM queue instrumentation, mandatory trace propagation and KServe
+controller-log delivery gaps were retired because those behaviors are now **out of scope**.
+Unresolved collection-path, CR, Loki sizing and version details were carried over above.

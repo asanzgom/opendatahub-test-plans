@@ -1,25 +1,24 @@
-# Structured Logging for Inference Components
+# Inference Request Log Collection
 
-Structured JSON logging for RHOAI inference components (vLLM, llm-d EPP,
-MaaS, KServe controllers) with OTel-based log collection and Loki
-storage.
+Test plan for [RHAISTRAT-2413](https://redhat.atlassian.net/browse/RHAISTRAT-2413),
+using the Jira strategy description revised **August 26, 2026**. This scope collects
+native stdout/stderr logs from active vLLM, EPP, and MaaS inference requests into Loki.
+Structured formatting and controller lifecycle logging are expressly out of scope.
 
-## Links
+- [Test plan](TestPlan.md) (v1.2.0, In Review)
+- [Test case index](test_cases/INDEX.md) (7 cases: 4 P0, 2 P1, 1 P2)
+- [Quality review](TestPlanReview.md)
+- [Open gaps](TestPlanGaps.md)
 
-- **Strategy**: [RHAISTRAT-2413](https://redhat.atlassian.net/browse/RHAISTRAT-2413)
-- **Source RFE**: [RHAIRFE-2776](https://redhat.atlassian.net/browse/RHAIRFE-2776)
-- **Test Plan**: [TestPlan.md](TestPlan.md)
-- **Gaps**: [TestPlanGaps.md](TestPlanGaps.md)
+## Changelog
 
-## Test Cases
+### v1.2.0 — 2026-11-03
 
-**51 test cases** (24 P0, 24 P1, 3 P2) across 12 categories.
+- Rebased the plan and acceptance-criterion traceability on the current five-AC
+  strategy; removed stale 20-AC, structured-logging and controller-lifecycle coverage.
+- Replaced 51 cases with seven focused E2E/NFR cases; execution is blocked on
+  documented collection-path, CR schema, and tenant-query implementation contracts.
 
-- **Index**: [test_cases/INDEX.md](test_cases/INDEX.md)
-- **Review**: [TestPlanReview.md](TestPlanReview.md) (10/10, Ready)
+### v1.0.0 — 2026-08-17
 
-## Test Implementation
-
-Automated tests will be implemented in the appropriate component
-repositories (odh-observability, llm-d, models-as-a-service) and in
-the downstream E2E test suite for cross-component integration scenarios.
+- Initial plan for the earlier structured JSON logging strategy (superseded).
